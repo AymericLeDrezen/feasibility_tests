@@ -1,0 +1,483 @@
+# BEGIN data_tables.py
+from __future__ import annotations
+import numpy as np
+from utils import unique_rows, is_identity
+
+def lump_transformations_into_states(
+    states: np.ndarray,
+    transformations: np.ndarray,
+) -> np.ndarray:
+    """
+    Build the lumped preparation set: { T_t ω_s }_(s,t).
+    Inputs:
+      states: (S,d)
+      transformations: (T,d,d)
+    Returns:
+      lumped_states: (S'_unique, d)
+    """
+
+    # ω'_(s,t) = T_t ω_s
+    transformed = np.einsum('tdp,sp->tsd', transformations, states)       # (T,S,d)
+    lumped_states = transformed.transpose(1, 0, 2).reshape(-1, states.shape[1])
+
+    return unique_rows(lumped_states)
+
+
+def lump_transformations_into_effects(
+    transformations: np.ndarray,
+    effects: np.ndarray,
+) -> np.ndarray:
+    """
+    Build the lumped effect set: { e_k ∘ T_t }_(k,t).
+    Inputs:
+      transformations: (T,d,d)
+      effects: (K,d) as row-vectors in V*
+    Returns:
+      lumped_effects: (K'_unique, d)
+    """
+
+    # e'_(k,t) = e_k @ T_t   (left action of row vector)
+    k_t_p = np.einsum('kd,tdp->ktp', effects, transformations)           # (K,T,d)
+    lumped_effects = k_t_p.reshape(-1, effects.shape[1])
+
+    return unique_rows(lumped_effects)
+
+
+
+def compute_data_table(
+    states: np.ndarray,
+    transformations: np.ndarray,
+    effects: np.ndarray,
+) -> np.ndarray:
+    """
+    PTM probabilities: p(k|s,t) = e_k · [T_t(ω_s)]  -> shape (K,S,T).
+    If there's a single identity transformation,
+    returns the PM table p(k|s) = e_k · ω_s with shape (K,S).
+    """
+
+    if is_identity(transformations):
+        return np.einsum('kd,sd->ks', effects, states)               # PM
+
+    return np.einsum('kd,tdp,sp->kst', effects, transformations, states)  # PTM
+
+# END data_tables.py
+
+# BEGIN orchestrator.py
+# orchestrator.py
+import numpy as np
+
+from data_tables import (
+    lump_transformations_into_states,
+    lump_transformations_into_effects,
+    compute_data_table,
+)
+from example import states, effects, transformations, identity
+from operational_identities import gen_operational_identities
+from assignment_polytopes import construct_assignment_polytope
+
+
+# Lumped preparations and measurements
+lumped_state_array = lump_transformations_into_states(
+    states=states,
+    transformations=transformations,
+)
+lumped_effect_array = lump_transformations_into_effects(
+    transformations=transformations,
+    effects=effects,
+)
+
+# Data tables
+probability_table_p_k_given_s_t = compute_data_table(
+    states=states,
+    transformations=transformations,
+    effects=effects,
+)
+probability_table_from_lumped_states = compute_data_table(
+    states=lumped_state_array,
+    transformations=identity,
+    effects=effects,
+)
+probability_table_from_lumped_effects = compute_data_table(
+    states=states,
+    transformations=identity,
+    effects=lumped_effect_array,
+)
+
+# Operational identities
+operational_identity_dictionary = gen_operational_identities(
+    states=states,
+    effects=effects,
+    transformations=transformations,
+)
+operational_identity_states = operational_identity_dictionary["states"]
+operational_identity_effects = operational_identity_dictionary["effects"]
+operational_identity_transformations = operational_identity_dictionary["transformations"]
+
+# Assignment polytopes (source and measurement)
+assignment_polytope_dictionary = construct_assignment_polytope(
+    states=states,
+    effects=effects,
+    operational_identities=operational_identity_dictionary,
+)
+source_assignment_vertices = assignment_polytope_dictionary["source_vertices"]
+effect_assignment_vertices = assignment_polytope_dictionary["effect_vertices"]
+
+
+if __name__ == "__main__":
+    print("Operational effect identities (OEM):")
+    print(operational_identity_effects)
+    print("Source-assignment polytope vertices shape:", source_assignment_vertices.shape)
+    print("Measurement-assignment polytope vertices shape:", effect_assignment_vertices.shape)
+
+# END orchestrator.py
+
+# BEGIN example.py
+import numpy as np
+
+
+# --- build the example scenario -------------------------------------------------
+
+# Each object is expressed in the affine Bloch embedding of the GPT formalism.
+# The GPT probability rule p = e · (T ω) = ½(1+m.r) then reproduces Tr[E T(ρ)].
+
+def state(rx: float, ry: float, rz: float) -> np.ndarray:
+    """
+    Construct a GPT state vector ω = (1, r_x, r_y, r_z).
+
+    Parameters
+    ----------
+    rx, ry, rz : float
+        Components of the Bloch vector representing the qubit state.
+
+    Returns
+    -------
+    np.ndarray, shape (4,)
+        Affine embedding of the state suitable for GPT calculations.
+    """
+    return np.array([1.0, rx, ry, rz], dtype=float)
+
+
+def effect(mx: float, my: float, mz: float) -> np.ndarray:
+    """
+    Construct a GPT effect vector e = (½, ½ m_x, ½ m_y, ½ m_z).
+
+    Parameters
+    ----------
+    mx, my, mz : float
+        Components of the Bloch vector representing the measurement direction.
+
+    Returns
+    -------
+    np.ndarray, shape (4,)
+        Affine embedding of the effect.
+    """
+    return 0.5 * np.array([1.0, mx, my, mz], dtype=float)
+
+
+def T_affine(R: np.ndarray) -> np.ndarray:
+    """
+    Embed a 3x3 Bloch rotation R as a 4x4 affine transformation
+    acting on the GPT state/effect vectors.
+
+    The result T satisfies:
+        T.dot(1, r_x, r_y, r_z)ᵀ = (1, (R · r)_x, (R · r)_y, (R · r)_z)ᵀ.
+
+    Parameters
+    ----------
+    R : np.ndarray, shape (3,3)
+        Rotation matrix on the Bloch sphere.
+
+    Returns
+    -------
+    np.ndarray, shape (4,4)
+        Affine representation used in PTM computations.
+    """
+
+    T = np.eye(4)
+    T[1:, 1:] = R
+    return T
+
+# 6 states/effects
+dirs = [(+1,0,0), (-1,0,0), (0,+1,0), (0,-1,0), (0,0,+1), (0,0,-1)]
+states  = np.vstack([state(*r)  for r in dirs])   # (6,4)
+effects = np.vstack([effect(*m) for m in dirs])   # (6,4)
+
+identity = np.eye(4)[None]
+
+
+# 4 transforms: I, Z, S, S^{-1}
+R_I  = np.eye(3)
+R_Z  = np.diag([-1,-1,1])
+R_S  = np.array([[0,1,0],[-1,0,0],[0,0,1]], float)
+R_Si = np.array([[0,-1,0],[1,0,0],[0,0,1]], float)
+transformations = np.stack([T_affine(R) for R in [R_I, R_Z, R_S, R_Si]])  # (4,4,4)
+# END example.py
+
+# BEGIN operational_identities.py
+from __future__ import annotations
+import numpy as np
+import sympy as sp
+
+
+def exact_identities_from_vectors(vectors: np.ndarray) -> np.ndarray:
+    """
+    Given row vectors v_i in R^d (vectors.shape == (N, d)),
+    find linear identities of the form sum_i alpha_i v_i = 0
+    using SymPy's exact nullspace.
+    """
+    M = sp.Matrix(vectors).T          # columns = vectors
+    nullspace = M.nullspace()        # list of column vectors
+    return np.vstack(
+        [np.array(v, dtype=float).reshape(1, -1) for v in nullspace]
+    )
+
+
+def gen_operational_identities(
+    states: np.ndarray,
+    effects: np.ndarray,
+    transformations: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """
+    Linear operational identities among states, effects, and transformations.
+    atol kept only for API compatibility; not used.
+    """
+    T_flat = transformations.reshape(transformations.shape[0], -1)
+
+    return {
+        "states":          exact_identities_from_vectors(states),
+        "effects":         exact_identities_from_vectors(effects),
+        "transformations": exact_identities_from_vectors(T_flat),
+    }
+
+# END operational_identities.py
+
+# BEGIN assignment_polytopes.py
+# assignment_polytopes.py
+from __future__ import annotations
+
+import numpy as np
+import cdd
+
+
+def compute_vertices_from_halfspace_representation(
+    number_of_variables: int,
+    inequality_matrix: np.ndarray,
+    inequality_vector: np.ndarray,
+) -> np.ndarray:
+    """
+    Given an H-representation
+        { x in R^n | inequality_matrix x <= inequality_vector },
+    compute the vertices of the corresponding polytope using cdd.
+
+    number_of_variables: n
+    inequality_matrix: shape (M, n)
+    inequality_vector: shape (M,)
+    """
+
+    halfspace_array = np.hstack(
+        [inequality_vector.reshape(-1, 1), -inequality_matrix]
+    )
+
+    cdd_matrix = cdd.matrix_from_array(
+        halfspace_array,
+        rep_type=cdd.RepType.INEQUALITY,
+    )
+    polyhedron = cdd.polyhedron_from_matrix(cdd_matrix)
+    generator_matrix = cdd.copy_generators(polyhedron)
+    generator_array = np.array(generator_matrix.array, dtype=float)
+
+    is_vertex_row = generator_array[:, 0] == 1.0
+    vertex_array = generator_array[is_vertex_row][:, 1:]
+
+    return vertex_array
+
+
+def build_effect_assignment_halfspace_representation(
+    number_of_effects: int,
+    effect_identity_matrix: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Build the H-representation (inequality_matrix, inequality_vector) for the
+    effect-assignment polytope in R^{number_of_effects}.
+
+    Variables: effect_assignment_vector[k] = ξ_{e_k}(λ)
+
+    Constraints:
+      0 <= effect_assignment_vector[k] <= 1
+      Σ_k alpha_k * effect_assignment_vector[k] = 0
+        for each row alpha of effect_identity_matrix.
+    """
+
+    inequality_matrix_list = []
+    inequality_vector_list = []
+
+    # 0 <= x_k  <=>  -x_k <= 0
+    inequality_matrix_list.append(-np.eye(number_of_effects))
+    inequality_vector_list.append(np.zeros(number_of_effects))
+
+    # x_k <= 1
+    inequality_matrix_list.append(np.eye(number_of_effects))
+    inequality_vector_list.append(np.ones(number_of_effects))
+
+    for effect_identity_row in effect_identity_matrix:
+        effect_identity_row = np.asarray(effect_identity_row, float).reshape(1, -1)
+
+        # alpha · x = 0 as two inequalities
+        inequality_matrix_list.append(effect_identity_row)
+        inequality_vector_list.append(np.array([0.0]))
+
+        inequality_matrix_list.append(-effect_identity_row)
+        inequality_vector_list.append(np.array([0.0]))
+
+    inequality_matrix = np.vstack(inequality_matrix_list)
+    inequality_vector = np.concatenate(inequality_vector_list)
+
+    return inequality_matrix, inequality_vector
+
+
+def build_source_assignment_halfspace_representation(
+    number_of_states: int,
+    state_identity_matrix: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Build the H-representation (inequality_matrix, inequality_vector) for the
+    source-assignment polytope in R^{number_of_states}.
+
+    Variables: source_assignment_vector[s] = ξ_{s̄ = s}(λ)
+
+    Constraints:
+      source_assignment_vector[s] >= 0
+      Σ_s source_assignment_vector[s] = 1
+      Σ_s beta_s * source_assignment_vector[s] = 0
+        for each row beta of state_identity_matrix.
+    """
+
+    inequality_matrix_list = []
+    inequality_vector_list = []
+
+    # y_s >= 0  <=>  -y_s <= 0
+    inequality_matrix_list.append(-np.eye(number_of_states))
+    inequality_vector_list.append(np.zeros(number_of_states))
+
+    normalization_row = np.ones(number_of_states).reshape(1, -1)
+
+    # Σ_s y_s = 1 as two inequalities
+    inequality_matrix_list.append(normalization_row)
+    inequality_vector_list.append(np.array([1.0]))
+
+    inequality_matrix_list.append(-normalization_row)
+    inequality_vector_list.append(np.array([-1.0]))
+
+    for state_identity_row in state_identity_matrix:
+        state_identity_row = np.asarray(state_identity_row, float).reshape(1, -1)
+
+        # beta · y = 0 as two inequalities
+        inequality_matrix_list.append(state_identity_row)
+        inequality_vector_list.append(np.array([0.0]))
+
+        inequality_matrix_list.append(-state_identity_row)
+        inequality_vector_list.append(np.array([0.0]))
+
+    inequality_matrix = np.vstack(inequality_matrix_list)
+    inequality_vector = np.concatenate(inequality_vector_list)
+
+    return inequality_matrix, inequality_vector
+
+
+def construct_assignment_polytope(
+    states: np.ndarray,
+    effects: np.ndarray,
+    operational_identities: dict[str, np.ndarray],
+) -> dict[str, np.ndarray]:
+    """
+    Construct source- and effect-assignment polytopes from linear
+    operational identities among states and effects.
+
+    states: array of shape (number_of_states, dimension)
+    effects: array of shape (number_of_effects, dimension)
+    operational_identities:
+        {
+          "states":  array of shape (number_of_state_identities, number_of_states),
+          "effects": array of shape (number_of_effect_identities, number_of_effects),
+        }
+
+    Returns:
+        {
+          "source_vertices": array of shape (number_of_source_vertices, number_of_states),
+          "effect_vertices": array of shape (number_of_effect_vertices, number_of_effects),
+        }
+    """
+
+    number_of_states = states.shape[0]
+    number_of_effects = effects.shape[0]
+
+    state_identity_matrix = operational_identities["states"]
+    effect_identity_matrix = operational_identities["effects"]
+
+    effect_inequality_matrix, effect_inequality_vector = (
+        build_effect_assignment_halfspace_representation(
+            number_of_effects=number_of_effects,
+            effect_identity_matrix=effect_identity_matrix,
+        )
+    )
+
+    source_inequality_matrix, source_inequality_vector = (
+        build_source_assignment_halfspace_representation(
+            number_of_states=number_of_states,
+            state_identity_matrix=state_identity_matrix,
+        )
+    )
+
+    effect_vertices = compute_vertices_from_halfspace_representation(
+        number_of_variables=number_of_effects,
+        inequality_matrix=effect_inequality_matrix,
+        inequality_vector=effect_inequality_vector,
+    )
+
+    source_vertices = compute_vertices_from_halfspace_representation(
+        number_of_variables=number_of_states,
+        inequality_matrix=source_inequality_matrix,
+        inequality_vector=source_inequality_vector,
+    )
+
+    return {
+        "source_vertices": source_vertices,
+        "effect_vertices": effect_vertices,
+    }
+
+# END assignment_polytopes.py
+
+# BEGIN repo_to_context.py
+import os
+
+def build_context(output_file="context.txt"):
+    py_files = [f for f in os.listdir('.') if f.endswith('.py') and os.path.isfile(f)]
+    with open(output_file, 'w', encoding='utf-8') as out:
+        for fname in py_files:
+            out.write(f"# BEGIN {fname}\n")
+            with open(fname, 'r', encoding='utf-8') as src:
+                out.write(src.read())
+            out.write(f"\n# END {fname}\n\n")
+
+if __name__ == "__main__":
+    build_context()
+
+# END repo_to_context.py
+
+# BEGIN utils.py
+import numpy as np
+
+
+def unique_rows(a: np.ndarray) -> np.ndarray:
+    
+    return np.unique(a, axis=0)
+
+
+def is_identity(transformations: np.ndarray) -> bool:
+    return (
+        transformations.shape[0] == 1
+        and np.allclose(transformations[0], np.eye(transformations.shape[1]))
+    )
+
+# END utils.py
+
