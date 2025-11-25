@@ -1,4 +1,4 @@
-# Noncontextual Assignment Polytopes for GPT Scenarios
+# Feasibility Tests for PTM/PM Scenarios
 
 This repository implements a small, self-contained pipeline for testing **noncontextuality** in generalized probabilistic theory (GPT) scenarios using **assignment polytopes** and a linear-program feasibility test.
 
