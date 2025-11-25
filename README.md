@@ -1,46 +1,57 @@
-# split_prep_paradox
-Code designed for finding and verifying split-prep paradoxes
+# Noncontextual Assignment Polytopes for GPT Scenarios
 
-Cases in which a direct preparation P2 is operationally indistinguishable from a preparation P1 followed by a transformation T (so that the final statistics coincide), yet adding the transformational layer renders a noncontextual model impossible even though the underlying PM statistics remain noncontextual.
+This repository implements a small, self-contained pipeline for testing **noncontextuality** in generalized probabilistic theory (GPT) scenarios using **assignment polytopes** and a linear-program feasibility test.
 
+The code is designed to be:
 
-## Dependencies
-- Python ≥ 3.8  
-- [NumPy](https://numpy.org/)  
-- [SciPy](https://scipy.org/) (`scipy.optimize.linprog`)  
-- Standard library: `fractions`, `csv`, `os`, `itertools`
+- mathematically transparent,
+- minimal (almost no defensive checks),
+- highly readable thanks to explicit variable names and heavy use of NumPy / SciPy / SymPy / cdd.
 
-Install dependencies via pip:
+---
+
+## 1. What this repo does
+
+Given a finite GPT experiment specified by:
+
+- a set of **states** `states`,
+- a set of **effects** `effects`,
+- a set of **transformations** `transformations`,
+
+the pipeline does the following:
+
+1. **Lumps transformations** into states and effects to build equivalent PM scenarios.
+2. **Computes data tables**  
+   - PTM: \(p(k \mid s, t)\)  
+   - PM from lumped states  
+   - PM from lumped effects
+3. **Finds operational identities** (linear relations) among states, effects, and transformations via exact nullspaces.
+4. **Builds assignment polytopes**:
+   - source-assignment polytope (preparations),
+   - effect-assignment polytope (measurements).
+5. **Builds a linear system** \(M x = b\) encoding the F1 formulation of a noncontextual ontological model.
+6. **Tests feasibility** of \(M x = b\) with \(x \ge 0\) using linear programming.
+   - If feasible: the data admit a noncontextual model of this type.
+   - If infeasible: the scenario is contextual (in that sense).
+
+All of this is orchestrated from `orchestrator.py`.
+
+---
+
+## 2. Installation
+
+### 2.1. Dependencies
+
+Python 3.10+ is recommended.
+
+Core Python packages:
+
+- `numpy`
+- `scipy` (for `scipy.optimize.linprog`)
+- `sympy`
+- `pycddlib` (or your system’s `cdd` Python bindings)
+
+Install with e.g.:
+
 ```bash
-pip install numpy scipy
-
-```
-## Running the Script
-
-Clone or place `split_prep_detector.py` in your project directory, then run:
-
-```bash
-python split_prep_detector.py
-
-```
-## What Happens When You Run It
-
-The pipeline is executed for:
-
-- **Baldi-4** (4 stabilizer transforms, includes identity).
-- **Clifford-24** (all 24 single-qubit Cliffords).
-
-Results are printed to the console:
-
-- Number of float-based prep/meas/transform identities found.
-- A few sample "nice" LLL-reduced integer transform identities.
-- A few detected `prep + transform == prep` equalities.
-- PM vs PTM feasibility checks and δ* slack value.
-- An explicit **SPLIT-PREP PARADOX** warning if detected.
-
-Several CSV files are created for later analysis:
-
-- `identities_found.csv` – all float-based identities (Baldi-4).
-- `identities_nice.csv` – rational/LLL-reduced transform identities (Baldi-4).
-- `prep_transform_equalities.csv` – prep+transform=prep equalities (Baldi-4).
-- `identities_found4.csv`, `identities_nice4.csv`, `prep_transform_equalities4.csv` – same outputs for Clifford-24.
+pip install numpy scipy sympy pycddlib
